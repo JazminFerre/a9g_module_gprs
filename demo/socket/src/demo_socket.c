@@ -1,14 +1,3 @@
-/*
- * @File  demo_socket.c
- * @Brief socket(TCP) communication with block IO example
- * 
- * @Author: Neucrack 
- * @Date: 2018-06-12 18:04:08 
- * @Last Modified by: Neucrack
- * @Last Modified time: 2018-06-12 18:05:00
- */
-
-
 #include <string.h>
 #include <stdio.h>
 #include <api_os.h>
@@ -16,11 +5,17 @@
 #include <api_socket.h>
 #include <api_network.h>
 #include <api_debug.h>
-// ESTE ANDAAAA!°!!!ASDILÑUASIDASLKÑDASLÑK}}
-//HOLAaaa yo andoooo
+
+#include "api_hal_pm.h"
+//#include "time.h"
+#include "api_info.h"
+#include "api_hal_gpio.h"
+#include "api_call.h"
+#include "api_audio.h"
+#include "demo_call.h"
+
 /*******************************************************************/
-/////////////////////////socket configuration////////////////////////
-// (online tcp debug tool: http://tt.ai-thinker.com:8000/ttcloud)
+// ver si anda la llamada, conseguir los cables. Si andan las dos cosas fijar el invertalo de tiempo en el que le pego al servidor.
 #define SERVER_IP   "app-argus-server.herokuapp.com"
 #define SERVER_PORT 80
 #define SERVER_PATH "/ping"
@@ -207,16 +202,10 @@ int Http_Get(const char* domain, int port,const char* path, char* retBuffer, int
     return -1;
 }
 
-
 void Socket_BIO_Test()
 {
     char buffer[2048];
     int len = sizeof(buffer);
-    //wait for gprs network connection ok
-    semStart = OS_CreateSemaphore(0);
-    OS_WaitForSemaphore(semStart,OS_TIME_OUT_WAIT_FOREVER);
-    OS_DeleteSemaphore(semStart);
-
     //perform http get
     if(Http_Get(SERVER_IP,SERVER_PORT,SERVER_PATH,buffer,&len) < 0)
     {
@@ -235,22 +224,79 @@ void Socket_BIO_Test()
     }
 }
 
-void test_MainTask(void* param)
+void OnPinFalling(GPIO_INT_callback_param_t* param)
 {
-    API_Event_t* event=NULL;
+    switch(param->pin)
+    {
+        case GPIO_PIN2: // El pin02 realiza la llamada al numero por defecto
+            //GPIO_LEVEL statusNow;
+            //GPIO_Get(GPIO_PIN2,&statusNow);
+            AUDIO_MicOpen();
+            AUDIO_SpeakerOpen();
+            CALL_Dial(DIAL_NUMBER);
+            break;
+        case GPIO_PIN3: // El pin03 realiza la llamada al numero por defecto
+            //GPIO_LEVEL statusNow2;
+            //GPIO_Get(GPIO_PIN3,&statusNow2);
+            CALL_HangUp();
+        default:
+            break;
+    }
+}
 
-    Socket_BIO_Test();
-    
+void GPIO_TestTask()
+{
+    GPIO_config_t gpioINT = { // Configuro el PIN02 en interrupcion por flanco descendente, con nivel por defecto bajo.
+        .mode               = GPIO_MODE_INPUT_INT,
+        .pin                = GPIO_PIN2,
+        .defaultLevel       = GPIO_LEVEL_LOW,
+        .intConfig.debounce = 50,
+        .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
+        .intConfig.callback = OnPinFalling
+    };
+    GPIO_config_t gpioINT2 = { // Configuro el PIN03 en interrupcion por flanco descendente, con nivel por defecto bajo.
+        .mode               = GPIO_MODE_INPUT_INT,
+        .pin                = GPIO_PIN3,
+        .defaultLevel       = GPIO_LEVEL_LOW,
+        .intConfig.debounce = 50,
+        .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
+        .intConfig.callback = OnPinFalling
+    };
+    // Inicio las interrupciones
+    GPIO_Init(gpioINT); 
+    GPIO_Init(gpioINT2);
     while(1)
     {
-        if(OS_WaitEvent(socketTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
-        {
-            // EventDispatch(event);
-            OS_Free(event->pParam1);
-            OS_Free(event->pParam2);
-            OS_Free(event);
-        }
+        OS_Sleep(1000);                                  //Sleep 1s
     }
+}
+
+void init_MainTask(void* param)
+{    
+    // variables para el calculo de bateria   
+    uint8_t percent;
+    uint16_t v;
+    // variables para el imei
+    uint8_t imei[16];
+    //wait for gprs network connection ok
+    semStart = OS_CreateSemaphore(0);
+    OS_WaitForSemaphore(semStart,OS_TIME_OUT_WAIT_FOREVER);
+    OS_DeleteSemaphore(semStart);
+    //GPIO_TestTask(); //interrupciones
+    // aca  get imei
+    memset(imei,0,sizeof(imei));
+    INFO_GetIMEI(imei);
+    Trace(1,"http %s",imei);
+    // esto es lo que itera, el calculo debateria y el pegarle al servidor.
+    while(1)
+    {   
+        v = PM_Voltage(&percent);
+        Trace(1,"http power:%d %d",v,percent);
+        Socket_BIO_Test();
+        OS_Sleep(60000);  
+    }
+    
+    
 }
 
 
@@ -258,7 +304,7 @@ void socket_MainTask(void *pData)
 {
     API_Event_t* event=NULL;
 
-    testTaskHandle = OS_CreateTask(test_MainTask,
+    testTaskHandle = OS_CreateTask(init_MainTask,
         NULL, NULL, TEST_TASK_STACK_SIZE, TEST_TASK_PRIORITY, 0, 0, TEST_TASK_NAME);
 
     while(1)
