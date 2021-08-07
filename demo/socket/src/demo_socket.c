@@ -13,6 +13,12 @@
 #include "api_call.h"
 #include "api_audio.h"
 #include "demo_call.h"
+#include <api_gps.h>
+#include <api_hal_uart.h>
+#include "buffer.h"
+#include "gps_parse.h"
+#include "math.h"
+#include "gps.h"
 
 /*******************************************************************/
 // ver si anda la llamada, conseguir los cables. Si andan las dos cosas fijar el invertalo de tiempo en el que le pego al servidor.
@@ -33,7 +39,7 @@
 static HANDLE socketTaskHandle = NULL;
 static HANDLE testTaskHandle = NULL;
 static HANDLE semStart = NULL;
-
+bool isGpsOn = true;
 
 void EventDispatch(API_Event_t* pEvent)
 {
@@ -97,7 +103,30 @@ void EventDispatch(API_Event_t* pEvent)
             Trace(2,"network activate success");
             OS_ReleaseSemaphore(semStart);
             break;
-
+        case API_EVENT_ID_GPS_UART_RECEIVED:
+            GPS_Update(pEvent->pParam1,pEvent->param1);
+            break;
+        case API_EVENT_ID_UART_RECEIVED:
+            if(pEvent->param1 == UART1)
+            {
+                uint8_t data[pEvent->param2+1];
+                data[pEvent->param2] = 0;
+                memcpy(data,pEvent->pParam1,pEvent->param2);
+                Trace(1,"uart received data,length:%d,data:%s",pEvent->param2,data);
+                if(strcmp(data,"close") == 0)
+                {
+                    Trace(1,"close gps");
+                    GPS_Close();
+                    isGpsOn = false;
+                }
+                else if(strcmp(data,"open") == 0)
+                {
+                    Trace(1,"open gps");
+                    GPS_Open(NULL);
+                    isGpsOn = true;
+                }
+            }
+            break;
         default:
             break;
     }
@@ -271,34 +300,197 @@ void GPIO_TestTask()
     }
 }
 
+void init_gps()
+{   
+    bool flag = false;
+    GPS_Info_t* gpsInfo = Gps_GetInfo();
+    uint8_t buffer[300];
+
+    //wait for gprs register complete
+    //The process of GPRS registration network may cause the power supply voltage of GPS to drop,
+    //which resulting in GPS restart.
+    while(!flag)
+    {
+        Trace(1,"wait for gprs regiter complete");
+        OS_Sleep(2000);
+    }
+
+    //open GPS hardware(UART2 open either)
+    GPS_Init();
+    GPS_Open(NULL);
+
+    //wait for gps start up, or gps will not response command
+    while(gpsInfo->rmc.latitude.value == 0)
+        OS_Sleep(1000);
+    
+
+    // set gps nmea output interval
+    for(uint8_t i = 0;i<5;++i)
+    {
+        bool ret = GPS_SetOutputInterval(10000);
+        Trace(1,"set gps ret:%d",ret);
+        if(ret)
+            break;
+        OS_Sleep(1000);
+    }
+    
+    if(!GPS_GetVersion(buffer,150))
+        Trace(1,"get gps firmware version fail");
+    else
+        Trace(1,"gps firmware version:%s",buffer);
+
+    if(!GPS_SetOutputInterval(1000))
+        Trace(1,"set nmea output interval fail");
+    
+    Trace(1,"init ok");
+
+    while(1)
+    {
+        if(isGpsOn)
+        {
+            //show fix info
+            uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
+            char* isFixedStr;            
+            if(isFixed == 2)
+                isFixedStr = "2D fix";
+            else if(isFixed == 3)
+            {
+                if(gpsInfo->gga.fix_quality == 1)
+                    isFixedStr = "3D fix";
+                else if(gpsInfo->gga.fix_quality == 2)
+                    isFixedStr = "3D/DGPS fix";
+            }
+            else
+                isFixedStr = "no fix";
+
+            //convert unit ddmm.mmmm to degree(°) 
+            int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
+            double latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
+            temp = (int)(gpsInfo->rmc.longitude.value/gpsInfo->rmc.longitude.scale/100);
+            double longitude = temp+(double)(gpsInfo->rmc.longitude.value - temp*gpsInfo->rmc.longitude.scale*100)/gpsInfo->rmc.longitude.scale/60.0;
+
+            
+            //you can copy ` latitude,longitude ` to http://www.gpsspg.com/maps.htm check location on map
+
+            snprintf(buffer,sizeof(buffer),"GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s, coordinate:WGS84, Latitude:%f, Longitude:%f, unit:degree,altitude:%f",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
+                                                                gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr, latitude,longitude,gpsInfo->gga.altitude);
+            //show in tracer
+            Trace(2,buffer);
+            //send to UART1
+            UART_Write(UART1,buffer,strlen(buffer));
+            UART_Write(UART1,"\r\n\r\n",4);
+        }
+
+    }
+}
+
 void init_MainTask(void* param)
 {    
     // variables para el calculo de bateria   
     uint8_t percent;
     uint16_t v;
+
     // variables para el imei
     uint8_t imei[16];
+
     //wait for gprs network connection ok
     semStart = OS_CreateSemaphore(0);
     OS_WaitForSemaphore(semStart,OS_TIME_OUT_WAIT_FOREVER);
     OS_DeleteSemaphore(semStart);
+
     //GPIO_TestTask(); //interrupciones
+
     // aca  get imei
     memset(imei,0,sizeof(imei));
     INFO_GetIMEI(imei);
     Trace(1,"http %s",imei);
+    //open UART1 to print NMEA infomation
+    UART_Config_t config = {
+        .baudRate = UART_BAUD_RATE_115200,
+        .dataBits = UART_DATA_BITS_8,
+        .stopBits = UART_STOP_BITS_1,
+        .parity   = UART_PARITY_NONE,
+        .rxCallback = NULL,
+        .useEvent   = true
+    };
+    UART_Init(UART1,config);
+
+    GPS_Info_t* gpsInfo = Gps_GetInfo();
+    uint8_t buffer[300];
+
+    //which resulting in GPS restart.
+    //open GPS hardware(UART2 open either)
+    GPS_Init();
+    GPS_Open(NULL);
+
+    //wait for gps start up, or gps will not response command
+    while(gpsInfo->rmc.latitude.value == 0)
+        OS_Sleep(1000);
+    
+    // set gps nmea output interval
+    for(uint8_t i = 0;i<5;++i)
+    {
+        bool ret = GPS_SetOutputInterval(10000);
+        Trace(1,"set gps ret:%d",ret);
+        if(ret)
+            break;
+        OS_Sleep(1000);
+    }
+    
+    if(!GPS_GetVersion(buffer,150))
+        Trace(1,"get gps firmware version fail");
+    else
+        Trace(1,"gps firmware version:%s",buffer);
+
+    if(!GPS_SetOutputInterval(1000))
+        Trace(1,"set nmea output interval fail");
+
     // esto es lo que itera, el calculo debateria y el pegarle al servidor.
     while(1)
     {   
         v = PM_Voltage(&percent);
         Trace(1,"http power:%d %d",v,percent);
         Socket_BIO_Test();
+        if(isGpsOn)
+        {
+            //show fix info
+            uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
+            char* isFixedStr= malloc(sizeof(isFixedStr));            
+            if(isFixed == 2)
+                isFixedStr = "2D fix";
+            else if(isFixed == 3)
+            {
+                if(gpsInfo->gga.fix_quality == 1)
+                    isFixedStr = "3D fix";
+                else if(gpsInfo->gga.fix_quality == 2)
+                    isFixedStr = "3D/DGPS fix";
+            }
+            else
+                isFixedStr = "no fix";
+
+            //convert unit ddmm.mmmm to degree(°) 
+            int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
+            double latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
+            temp = (int)(gpsInfo->rmc.longitude.value/gpsInfo->rmc.longitude.scale/100);
+            double longitude = temp+(double)(gpsInfo->rmc.longitude.value - temp*gpsInfo->rmc.longitude.scale*100)/gpsInfo->rmc.longitude.scale/60.0;
+
+            
+            //you can copy ` latitude,longitude ` to http://www.gpsspg.com/maps.htm check location on map
+
+            snprintf(buffer,sizeof(buffer),"http GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s, coordinate:WGS84, Latitude:%f, Longitude:%f, unit:degree,altitude:%f",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
+                                                                gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr, latitude,longitude,gpsInfo->gga.altitude);
+            //show in tracer
+            Trace(2,buffer);
+            //send to UART1
+            UART_Write(UART1,buffer,strlen(buffer));
+            UART_Write(UART1,"\r\n\r\n",4);
+            free(isFixedStr);
+        }
         OS_Sleep(60000);  
     }
     
     
 }
-
 
 void socket_MainTask(void *pData)
 {
