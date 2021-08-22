@@ -1,32 +1,32 @@
+/*
+ * @File  app_main.c
+ * @Brief An example of SDK's mini system
+ * 
+ * @Author: Neucrack 
+ * @Date: 2017-11-11 16:45:17 
+ * @Last Modified by: Neucrack
+ * @Last Modified time: 2017-11-11 18:24:56
+ */
 
-#include "stdbool.h"
+
 #include "stdint.h"
-#include "stdio.h"
+#include "stdbool.h"
+#include "api_os.h"
+#include "api_event.h"
+#include "api_debug.h"
 #include "string.h"
 #include "stdlib.h"
+#include "stdio.h"
 
-
-#include "api_os.h"
-#include "api_debug.h"
-#include "api_event.h"
 #include "api_sms.h"
 #include "api_hal_uart.h"
+#include "include/app_main_example.h"
 
-/////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////configuration//////////////////////////////////////////////////
-#define TEST_PHONE_NUMBER "13415840120"
-const uint8_t unicodeMsg[] = {0x00, 0x61, 0x00, 0x61, 0x00, 0x61, 0x6d, 0x4b, 0x8b, 0xd5, 0x77, 0xed, 0x4f, 0xe1}; //unicode:aaa测试短信
-const uint8_t gbkMsg[]     = {0x62, 0x62, 0x62, 0xB0, 0xA1, 0xB0, 0xA1, 0xB0, 0xA1, 0xB0, 0xA1, 0x63, 0x63, 0x63 };//GBK    :bbb啊啊啊啊ccc
-const uint8_t utf8Msg[]    = "utf-8测试短信";//Cause the encoding format of this file(sms.c) is UTF-8
-                            // UTF-8 Bytes:75 74 66 2D 38 E6 B5 8B E8 AF 95 E7 9F AD E4 BF A1 
-                            //(unicode:\u0075\u0074\u0066\u002d\u0038\u6d4b\u8bd5\u77ed\u4fe1) //you can convert here:https://r12a.github.io/apps/conversion/
-/////////////////////////////////////////////////////////////////////////////////////////////
+#define AppMain_TASK_STACK_SIZE    (1024 * 2)
+#define AppMain_TASK_PRIORITY      1 
+HANDLE mainTaskHandle  = NULL;
+HANDLE otherTaskHandle = NULL;
 
-#define MAIN_TASK_STACK_SIZE    (2048 * 2)
-#define MAIN_TASK_PRIORITY      0
-#define MAIN_TASK_NAME          "SMS Test Task"
-
-static HANDLE mainTaskHandle = NULL;
 static uint8_t flag = 0;
 
 void SMSInit()
@@ -72,61 +72,31 @@ void Init()
     SMSInit();
 }
 
-
-
-void SendSmsUnicode()
-{
-    Trace(1,"sms start send unicode message");
-    if(!SMS_SendMessage(TEST_PHONE_NUMBER,unicodeMsg,sizeof(unicodeMsg),SIM0))
-    {
-        Trace(1,"sms send message fail");
-    }
-}
-
-void SendSmsGbk()
-{
-    uint8_t* unicode = NULL;
-    uint32_t unicodeLen;
-
-    Trace(1,"sms start send GBK message");
-
-    if(!SMS_LocalLanguage2Unicode(gbkMsg,sizeof(gbkMsg),CHARSET_CP936,&unicode,&unicodeLen))
-    {
-        Trace(1,"local to unicode fail!");
-        return;
-    }
-    if(!SMS_SendMessage(TEST_PHONE_NUMBER,unicode,unicodeLen,SIM0))
-    {
-        Trace(1,"sms send message fail");
-    }
-    OS_Free(unicode);
-}
-
-void SendUtf8()
+void SendSMS(uint8_t message[])
 {
     uint8_t* unicode = NULL;
     uint32_t unicodeLen;
 
     Trace(1,"sms start send UTF-8 message");
 
-    if(!SMS_LocalLanguage2Unicode(utf8Msg,strlen(utf8Msg),CHARSET_UTF_8,&unicode,&unicodeLen))
+    if(!SMS_LocalLanguage2Unicode(message,strlen(message),CHARSET_UTF_8,&unicode,&unicodeLen))
     {
         Trace(1,"local to unicode fail!");
         return;
     }
-    if(!SMS_SendMessage(TEST_PHONE_NUMBER,unicode,unicodeLen,SIM0))
+    if(!SMS_SendMessage(PHONE_NUMBER,unicode,unicodeLen,SIM0))
     {
         Trace(1,"sms send message fail");
     }
     OS_Free(unicode);
 }
 
-
-void SendSMS()
+void messageRecieved(uint8_t* content)
 {
-    // SendSmsUnicode();
-    // SendSmsGbk();
-    SendUtf8();
+    char buffer[200];
+    snprintf(buffer, sizeof(buffer), "Message received : %s", content);
+    Trace(1, buffer);
+    SendSMS(buffer);
 }
 
 void ServerCenterTest()
@@ -154,6 +124,7 @@ void ServerCenterTest()
 
 void EventDispatch(API_Event_t* pEvent)
 {
+    
     switch(pEvent->id)
     {
         case API_EVENT_ID_NO_SIMCARD:
@@ -173,39 +144,15 @@ void EventDispatch(API_Event_t* pEvent)
             break;
         case API_EVENT_ID_SMS_RECEIVED:
             Trace(2,"received message");
-            SMS_Encode_Type_t encodeType = pEvent->param1;
+            //SMS_Encode_Type_t encodeType = pEvent->param1;
             uint32_t contentLength = pEvent->param2;
             uint8_t* header = pEvent->pParam1;
             uint8_t* content = pEvent->pParam2;
 
             Trace(2,"message header:%s",header);
             Trace(2,"message content length:%d",contentLength);
-            if(encodeType == SMS_ENCODE_TYPE_ASCII)
-            {
-                Trace(2,"message content:%s",content);
-                UART_Write(UART1,content,contentLength);
-            }
-            else
-            {
-                uint8_t tmp[500];
-                memset(tmp,0,500);
-                for(int i=0;i<contentLength;i+=2)
-                    sprintf(tmp+strlen(tmp),"\\u%02x%02x",content[i],content[i+1]);
-                Trace(2,"message content(unicode):%s",tmp);//you can copy this string to http://tool.chinaz.com/tools/unicode.aspx and display as Chinese
-                uint8_t* gbk = NULL;
-                uint32_t gbkLen = 0;
-                if(!SMS_Unicode2LocalLanguage(content,contentLength,CHARSET_CP936,&gbk,&gbkLen))
-                    Trace(10,"convert unicode to GBK fail!");
-                else
-                {
-                    memset(tmp,0,500);
-                    for(int i=0;i<gbkLen;i+=2)
-                        sprintf(tmp+strlen(tmp),"%02x%02x ",gbk[i],gbk[i+1]);
-                    Trace(2,"message content(GBK):%s",tmp);//you can copy this string to http://m.3158bbs.com/tool-54.html# and display as Chinese
-                    UART_Write(UART1,gbk,gbkLen);//use serial tool that support GBK decode if have Chinese, eg: https://github.com/Neutree/COMTool
-                }
-                OS_Free(gbk);
-            }
+            messageRecieved(content);
+            
             break;
         case API_EVENT_ID_SMS_LIST_MESSAGE:
         {
@@ -232,7 +179,7 @@ void EventDispatch(API_Event_t* pEvent)
     if(flag == 3)
     {
         SMS_Storage_Info_t storageInfo;
-        SendSMS();
+        SendSMS("Ready and able!");
         ServerCenterTest();
         SMS_GetStorageInfo(&storageInfo,SMS_STORAGE_SIM_CARD);
         Trace(1,"sms storage sim card info, used:%d,total:%d",storageInfo.used,storageInfo.total);
@@ -248,16 +195,14 @@ void EventDispatch(API_Event_t* pEvent)
 }
 
 
-
-void SMSTest(void* pData)
+void AppMainTask(void *pData)
 {
     API_Event_t* event=NULL;
 
-    Init();
-
+    Init(); 
     while(1)
     {
-        if(OS_WaitEvent(mainTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
+        if(OS_WaitEvent(mainTaskHandle, &event, OS_TIME_OUT_WAIT_FOREVER))
         {
             EventDispatch(event);
             OS_Free(event->pParam1);
@@ -267,10 +212,9 @@ void SMSTest(void* pData)
     }
 }
 
-void sms_Main()
+void app_Main(void)
 {
-    mainTaskHandle = OS_CreateTask(SMSTest,
-        NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
+    mainTaskHandle = OS_CreateTask(AppMainTask ,
+        NULL, NULL, AppMain_TASK_STACK_SIZE, AppMain_TASK_PRIORITY, 0, 0, "init Task");
     OS_SetUserMainHandle(&mainTaskHandle);
 }
-

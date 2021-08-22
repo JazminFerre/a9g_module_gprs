@@ -19,6 +19,7 @@
 #include "gps_parse.h"
 #include "math.h"
 #include "gps.h"
+#include "api_sms.h"
 
 /*******************************************************************/
 #define SERVER_IP   "app-argus-server.herokuapp.com"
@@ -38,10 +39,16 @@ static HANDLE socketTaskHandle = NULL;
 static HANDLE testTaskHandle = NULL;
 static HANDLE semStart = NULL;
 bool isGpsOn = true;
-// falta ver tema apn, ver tema SMS y buscar el 200 y 201 en el header de respuesta 
+bool isDialSuccess = false;
+bool isCallComing = false;
+bool ackCall = false;
+bool makeCall = false;
+
+
 
 void EventDispatch(API_Event_t* pEvent)
-{
+{ 
+    uint8_t dtmf = '0';
     switch(pEvent->id)
     {
         case API_EVENT_ID_NO_SIMCARD:
@@ -156,6 +163,22 @@ void EventDispatch(API_Event_t* pEvent)
                 }
             }
             break;
+        case API_EVENT_ID_CALL_INCOMING:   //param1: number type, pParam1:number
+            isCallComing = true;
+            while(!ackCall && isCallComing)
+            {
+                Trace(1,"make a DTMF:%c",dtmf);
+                CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,false);
+                OS_Sleep(3000);
+                if(dtmf == '10') dtmf = '0';
+                dtmf ++;
+            }
+            ackCall = false;
+            isCallComing = false;
+            break;
+        case API_EVENT_ID_CALL_ANSWER  :  
+            Trace(1,"answer success");
+            break;
         default:
             break;
     }
@@ -262,10 +285,12 @@ void send_Data2Server(char* path)
 {
     char buffer[2048];
     int len = sizeof(buffer);
+    int fail = 0;
     //perform http post
     if(Http_Post(SERVER_IP,SERVER_PORT,path,buffer,&len) < 0)
     {
         Trace(1,"http Post fail");
+        fail++;
     }
     else
     {
@@ -278,6 +303,7 @@ void send_Data2Server(char* path)
         index0[4] = temp;
         Trace(1,"http response body:%s",index0+4);
     }
+    if(fail == 4) Trace(1,"http hola fail es igual a 4 hace algo");
 }
 
 void OnPinFalling(GPIO_INT_callback_param_t* param)
@@ -285,19 +311,28 @@ void OnPinFalling(GPIO_INT_callback_param_t* param)
     switch(param->pin)
     {
         case GPIO_PIN2: // El pin02 realiza la llamada al numero por defecto
-            //GPIO_LEVEL statusNow;
-            //GPIO_Get(GPIO_PIN2,&statusNow);
             AUDIO_MicOpen();
             AUDIO_SpeakerOpen();
-            CALL_Dial(DIAL_NUMBER);
-            break;
+            if(isCallComing){
+                ackCall = true;
+                CALL_Answer();
+                break;
+            }
+            else{
+                makeCall = true;
+                CALL_Dial(DIAL_NUMBER);
+                break;
+            }       
         case GPIO_PIN3: // El pin03 realiza la llamada al numero por defecto
-            //GPIO_LEVEL statusNow2;
-            //GPIO_Get(GPIO_PIN3,&statusNow2);
+            ackCall = true;
             CALL_HangUp();
+            AUDIO_MicClose();
+            AUDIO_SpeakerClose();
+            break;
         default:
             break;
     }
+
 }
 
 void init_GPIO()
@@ -319,6 +354,7 @@ void init_GPIO()
         .intConfig.callback = OnPinFalling
     };
     // Inicio las interrupciones
+
     GPIO_Init(gpioINT); 
     GPIO_Init(gpioINT2);
 }
@@ -412,20 +448,20 @@ void init_MainTask(void* param)
     uint8_t buffer[300];
     double* latitude = malloc(sizeof(latitude));
     double* longitude = malloc(sizeof(longitude));
-    //path
-    char* path=malloc(sizeof(path));
     //IMEI
     uint8_t imei[16];
     memset(imei,0,sizeof(imei));
     INFO_GetIMEI(imei);
-    Trace(1,"http %s",imei);
-
+    init_GPIO(); //interrupciones y leds de alerta
+    //path
+    char* path=malloc(sizeof(path));
     //wait for gprs network connection ok
     semStart = OS_CreateSemaphore(0);
-    OS_WaitForSemaphore(semStart,OS_TIME_OUT_WAIT_FOREVER);
+    if(OS_WaitForSemaphore(semStart,3000000) == false){ // espera por 5 min para poder conectarse a la red
+        Trace(1, "No se pudo conectar a la red en 5min");
+    }
     OS_DeleteSemaphore(semStart);
 
-    init_GPIO(); //interrupciones
     init_UART();
     init_GPS(gpsInfo, buffer);
 
@@ -433,6 +469,19 @@ void init_MainTask(void* param)
     while(1)
     {   
         v = PM_Voltage(&percent);
+        if(v <= 15){
+            sprintf(path,"/module/action/%s/bateria-baja",imei);
+            send_Data2Server(path);
+            OS_Sleep(3000);
+        }
+        if(makeCall){
+            sprintf(path,"/module/action/%s/llamada",imei);
+            Trace(1,"http %s",path);
+            send_Data2Server(path);
+            makeCall = false;
+            OS_Sleep(3000);
+        }
+        
         get_Coordinates(gpsInfo, buffer,latitude,longitude);       
         sprintf(path,"/module/save-location/%s/%f/%f/%d",imei,*latitude,*longitude, percent);
         send_Data2Server(path);
