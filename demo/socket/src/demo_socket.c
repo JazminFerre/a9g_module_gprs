@@ -43,8 +43,8 @@ bool isDialSuccess = false;
 bool isCallComing = false;
 bool ackCall = false;
 bool makeCall = false;
-
-
+bool setAlarm1 = false;
+bool setAlarm2 = false;
 
 void EventDispatch(API_Event_t* pEvent)
 { 
@@ -170,8 +170,8 @@ void EventDispatch(API_Event_t* pEvent)
                 Trace(1,"make a DTMF:%c",dtmf);
                 CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,false);
                 OS_Sleep(3000);
-                if(dtmf == '10') dtmf = '0';
                 dtmf ++;
+                if(dtmf == '10') dtmf = '0';
             }
             ackCall = false;
             isCallComing = false;
@@ -319,12 +319,19 @@ void OnPinFalling(GPIO_INT_callback_param_t* param)
                 break;
             }
             else{
-                makeCall = true;
-                CALL_Dial(DIAL_NUMBER);
-                break;
+                if(setAlarm1){
+                    setAlarm2 = true;
+                    break;
+                }
+                else{
+                    makeCall = true;
+                    CALL_Dial(DIAL_NUMBER);
+                    break;
+                }
             }       
         case GPIO_PIN3: // El pin03 realiza la llamada al numero por defecto
             ackCall = true;
+            setAlarm1 = true;
             CALL_HangUp();
             AUDIO_MicClose();
             AUDIO_SpeakerClose();
@@ -465,27 +472,40 @@ void init_MainTask(void* param)
     init_UART();
     init_GPS(gpsInfo, buffer);
 
+    sprintf(path,"/module/save/%s",imei);
+    send_Data2Server(path);
+    OS_Sleep(3000);
     //iteracion para enviarle infor al server
     while(1)
     {   
         v = PM_Voltage(&percent);
         if(v <= 15){
-            sprintf(path,"/module/action/%s/bateria-baja",imei);
+            sprintf(path,"/module/action/%s/low-battery",imei);
             send_Data2Server(path);
             OS_Sleep(3000);
         }
         if(makeCall){
-            sprintf(path,"/module/action/%s/llamada",imei);
+            sprintf(path,"/module/action/%s/call",imei);
             Trace(1,"http %s",path);
             send_Data2Server(path);
             makeCall = false;
             OS_Sleep(3000);
         }
+        if(setAlarm2){
+            sprintf(path,"/module/action/%s/alarm",imei);
+            Trace(1,"http %s",path);
+            send_Data2Server(path);
+            setAlarm1 =false;
+            setAlarm2 = false;
+            OS_Sleep(3000);
+
+        }    
         
         get_Coordinates(gpsInfo, buffer,latitude,longitude);       
         sprintf(path,"/module/save-location/%s/%f/%f/%d",imei,*latitude,*longitude, percent);
         send_Data2Server(path);
         OS_Sleep(60000);
+        setAlarm1 = false;
     }    
     free(path);
     free(latitude);
