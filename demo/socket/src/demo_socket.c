@@ -1,14 +1,3 @@
-/*
- * @File  demo_socket.c
- * @Brief socket(TCP) communication with block IO example
- * 
- * @Author: Neucrack 
- * @Date: 2018-06-12 18:04:08 
- * @Last Modified by: Neucrack
- * @Last Modified time: 2018-06-12 18:05:00
- */
-
-
 #include <string.h>
 #include <stdio.h>
 #include <api_os.h>
@@ -16,14 +5,25 @@
 #include <api_socket.h>
 #include <api_network.h>
 #include <api_debug.h>
-// ESTE ANDAAAA!°!!!ASDILÑUASIDASLKÑDASLÑK}}
-//HOLAaaa yo andoooo
+
+#include "api_hal_pm.h"
+//#include "time.h"
+#include "api_info.h"
+#include "api_hal_gpio.h"
+#include "api_call.h"
+#include "api_audio.h"
+#include "demo_call.h"
+#include <api_gps.h>
+#include <api_hal_uart.h>
+#include "buffer.h"
+#include "gps_parse.h"
+#include "math.h"
+#include "gps.h"
+#include "api_sms.h"
+
 /*******************************************************************/
-/////////////////////////socket configuration////////////////////////
-// (online tcp debug tool: http://tt.ai-thinker.com:8000/ttcloud)
 #define SERVER_IP   "app-argus-server.herokuapp.com"
 #define SERVER_PORT 80
-#define SERVER_PATH "/ping"
 /*******************************************************************/
 
 
@@ -38,10 +38,17 @@
 static HANDLE socketTaskHandle = NULL;
 static HANDLE testTaskHandle = NULL;
 static HANDLE semStart = NULL;
-
+bool isGpsOn = true;
+bool isDialSuccess = false;
+bool isCallComing = false;
+bool ackCall = false;
+bool makeCall = false;
+bool setAlarm1 = false;
+bool setAlarm2 = false;
 
 void EventDispatch(API_Event_t* pEvent)
-{
+{ 
+    uint8_t dtmf = '0';
     switch(pEvent->id)
     {
         case API_EVENT_ID_NO_SIMCARD:
@@ -81,8 +88,23 @@ void EventDispatch(API_Event_t* pEvent)
             {
               Network_PDP_Context_t context = {
                     .apn        ="datos.personal.com",
-                    .userName   = "datos"    ,
+                    .userName   = "datos",
                     .userPasswd = "datos"
+                };
+              Network_PDP_Context_t context1 = {
+                    .apn        ="claro.pe",
+                    .userName   = "claro",
+                    .userPasswd = "claro"
+                };
+              Network_PDP_Context_t context2 = {
+                    .apn        ="wap.gprs.unifon.com.ar",
+                    .userName   = "wap",
+                    .userPasswd = "wap"
+                };
+              Network_PDP_Context_t context3 = {
+                    .apn        ="internet.movil",
+                    .userName   = "internet",
+                    .userPasswd = "internet"
                 };
                 Network_StartActive(context);
             }
@@ -92,8 +114,23 @@ void EventDispatch(API_Event_t* pEvent)
             Trace(2,"network attach success");
               Network_PDP_Context_t context = {
                     .apn        ="datos.personal.com",
-                    .userName   = "datos"    ,
+                    .userName   = "datos",
                     .userPasswd = "datos"
+                };
+              Network_PDP_Context_t context1 = {
+                    .apn        ="claro.pe",
+                    .userName   = "claro",
+                    .userPasswd = "claro"
+                };
+              Network_PDP_Context_t context2 = {
+                    .apn        ="wap.gprs.unifon.com.ar",
+                    .userName   = "wap",
+                    .userPasswd = "wap"
+                };
+              Network_PDP_Context_t context3 = {
+                    .apn        ="internet.movil",
+                    .userName   = "internet",
+                    .userPasswd = "internet"
                 };
             Network_StartActive(context);
             break;
@@ -102,15 +139,52 @@ void EventDispatch(API_Event_t* pEvent)
             Trace(2,"network activate success");
             OS_ReleaseSemaphore(semStart);
             break;
-
+        case API_EVENT_ID_GPS_UART_RECEIVED:
+            GPS_Update(pEvent->pParam1,pEvent->param1);
+            break;
+        case API_EVENT_ID_UART_RECEIVED:
+            if(pEvent->param1 == UART1)
+            {
+                uint8_t data[pEvent->param2+1];
+                data[pEvent->param2] = 0;
+                memcpy(data,pEvent->pParam1,pEvent->param2);
+                Trace(1,"uart received data,length:%d,data:%s",pEvent->param2,data);
+                if(strcmp(data,"close") == 0)
+                {
+                    Trace(1,"close gps");
+                    GPS_Close();
+                    isGpsOn = false;
+                }
+                else if(strcmp(data,"open") == 0)
+                {
+                    Trace(1,"open gps");
+                    GPS_Open(NULL);
+                    isGpsOn = true;
+                }
+            }
+            break;
+        case API_EVENT_ID_CALL_INCOMING:   //param1: number type, pParam1:number
+            isCallComing = true;
+            while(!ackCall && isCallComing)
+            {
+                Trace(1,"make a DTMF:%c",dtmf);
+                CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,false);
+                OS_Sleep(3000);
+                dtmf ++;
+                if(dtmf == '10') dtmf = '0';
+            }
+            ackCall = false;
+            isCallComing = false;
+            break;
+        case API_EVENT_ID_CALL_ANSWER  :  
+            Trace(1,"answer success");
+            break;
         default:
             break;
     }
 }
 
-
-//http get with no header
-int Http_Get(const char* domain, int port,const char* path, char* retBuffer, int* bufferLen)
+int Http_Post(const char* domain, int port,const char* path, char* retBuffer, int* bufferLen)
 {
     bool flag = false;
     uint16_t recvLen = 0;
@@ -125,7 +199,7 @@ int Http_Get(const char* domain, int port,const char* path, char* retBuffer, int
     }
     Trace(1,"get ip success:%s -> %s",domain,ip);
     char* servInetAddr = ip;
-    snprintf(retBuffer,retBufferLen,"GET %s HTTP/1.1\r\nHost: %s\r\n\r\n",path,domain);
+    snprintf(retBuffer,retBufferLen,"POST %s HTTP/1.1\r\nHost: %s\r\n\r\n",path,domain);
     char* pData = retBuffer;
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if(fd < 0){
@@ -207,25 +281,21 @@ int Http_Get(const char* domain, int port,const char* path, char* retBuffer, int
     return -1;
 }
 
-
-void Socket_BIO_Test()
+void send_Data2Server(char* path)
 {
     char buffer[2048];
     int len = sizeof(buffer);
-    //wait for gprs network connection ok
-    semStart = OS_CreateSemaphore(0);
-    OS_WaitForSemaphore(semStart,OS_TIME_OUT_WAIT_FOREVER);
-    OS_DeleteSemaphore(semStart);
-
-    //perform http get
-    if(Http_Get(SERVER_IP,SERVER_PORT,SERVER_PATH,buffer,&len) < 0)
+    int fail = 0;
+    //perform http post
+    if(Http_Post(SERVER_IP,SERVER_PORT,path,buffer,&len) < 0)
     {
-        Trace(1,"http get fail");
+        Trace(1,"http Post fail");
+        fail++;
     }
     else
     {
         //show response message though tracer(pay attention:tracer can not show all the word if the body too long)
-        Trace(1,"http get success,ret:%s",buffer);
+        Trace(1,"http post success,ret:%s",buffer);
         char* index0 = strstr(buffer,"\r\n\r\n");
         char temp = index0[4];
         index0[4] = '\0';
@@ -233,32 +303,220 @@ void Socket_BIO_Test()
         index0[4] = temp;
         Trace(1,"http response body:%s",index0+4);
     }
+    if(fail == 4) Trace(1,"http hola fail es igual a 4 hace algo");
 }
 
-void test_MainTask(void* param)
+void OnPinFalling(GPIO_INT_callback_param_t* param)
 {
-    API_Event_t* event=NULL;
-
-    Socket_BIO_Test();
-    
-    while(1)
+    switch(param->pin)
     {
-        if(OS_WaitEvent(socketTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))
-        {
-            // EventDispatch(event);
-            OS_Free(event->pParam1);
-            OS_Free(event->pParam2);
-            OS_Free(event);
-        }
+        case GPIO_PIN2: // El pin02 realiza la llamada al numero por defecto
+            AUDIO_MicOpen();
+            AUDIO_SpeakerOpen();
+            if(isCallComing){
+                ackCall = true;
+                CALL_Answer();
+                break;
+            }
+            else{
+                if(setAlarm1){
+                    setAlarm2 = true;
+                    break;
+                }
+                else{
+                    makeCall = true;
+                    CALL_Dial(DIAL_NUMBER);
+                    break;
+                }
+            }       
+        case GPIO_PIN3: // El pin03 realiza la llamada al numero por defecto
+            ackCall = true;
+            setAlarm1 = true;
+            CALL_HangUp();
+            AUDIO_MicClose();
+            AUDIO_SpeakerClose();
+            break;
+        default:
+            break;
     }
+
 }
 
+void init_GPIO()
+{
+    GPIO_config_t gpioINT = { // Configuro el PIN02 en interrupcion por flanco descendente, con nivel por defecto bajo.
+        .mode               = GPIO_MODE_INPUT_INT,
+        .pin                = GPIO_PIN2,
+        .defaultLevel       = GPIO_LEVEL_LOW,
+        .intConfig.debounce = 50,
+        .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
+        .intConfig.callback = OnPinFalling
+    };
+    GPIO_config_t gpioINT2 = { // Configuro el PIN03 en interrupcion por flanco descendente, con nivel por defecto bajo.
+        .mode               = GPIO_MODE_INPUT_INT,
+        .pin                = GPIO_PIN3,
+        .defaultLevel       = GPIO_LEVEL_LOW,
+        .intConfig.debounce = 50,
+        .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
+        .intConfig.callback = OnPinFalling
+    };
+    // Inicio las interrupciones
+
+    GPIO_Init(gpioINT); 
+    GPIO_Init(gpioINT2);
+}
+
+void init_GPS(GPS_Info_t* gpsInfo, uint8_t * buffer)
+{  
+    //open GPS hardware(UART2 open either)
+    GPS_Init();
+    GPS_Open(NULL);
+
+    //wait for gps start up, or gps will not response command
+    while(gpsInfo->rmc.latitude.value == 0)
+        OS_Sleep(1000);
+    
+    // set gps nmea output interval
+    for(uint8_t i = 0;i<5;++i)
+    {
+        bool ret = GPS_SetOutputInterval(10000);
+        Trace(1,"set gps ret:%d",ret);
+        if(ret)
+            break;
+        OS_Sleep(1000);
+    }
+    
+    if(!GPS_GetVersion(buffer,150))
+        Trace(1,"get gps firmware version fail");
+    else
+        Trace(1,"gps firmware version:%s",buffer);
+
+    if(!GPS_SetOutputInterval(1000))
+        Trace(1,"set nmea output interval fail");
+    
+    Trace(1,"init ok");
+}
+
+void init_UART(){
+ //open UART1 to print NMEA infomation
+    UART_Config_t config = {
+        .baudRate = UART_BAUD_RATE_115200,
+        .dataBits = UART_DATA_BITS_8,
+        .stopBits = UART_STOP_BITS_1,
+        .parity   = UART_PARITY_NONE,
+        .rxCallback = NULL,
+        .useEvent   = true
+    };
+    UART_Init(UART1,config);
+}
+
+void get_Coordinates(GPS_Info_t* gpsInfo, uint8_t * buffer, double* latitude, double* longitude){
+ if(isGpsOn)
+        {
+            //show fix info
+            uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
+            char* isFixedStr= malloc(sizeof(isFixedStr));            
+            if(isFixed == 2)
+                isFixedStr = "2D fix";
+            else if(isFixed == 3)
+            {
+                if(gpsInfo->gga.fix_quality == 1)
+                    isFixedStr = "3D fix";
+                else if(gpsInfo->gga.fix_quality == 2)
+                    isFixedStr = "3D/DGPS fix";
+            }
+            else
+                isFixedStr = "no fix";
+
+            //convert unit ddmm.mmmm to degree(°) 
+            int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
+            *latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
+            temp = (int)(gpsInfo->rmc.longitude.value/gpsInfo->rmc.longitude.scale/100);
+            *longitude = temp+(double)(gpsInfo->rmc.longitude.value - temp*gpsInfo->rmc.longitude.scale*100)/gpsInfo->rmc.longitude.scale/60.0;
+            snprintf(buffer,sizeof(buffer),"http GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s, coordinate:WGS84, Latitude:%f, Longitude:%f, unit:degree,altitude:%f",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
+                                                                gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr, latitude,longitude,gpsInfo->gga.altitude);
+            //show in tracer
+            Trace(2,buffer);
+            //send to UART1
+            UART_Write(UART1,buffer,strlen(buffer));
+            UART_Write(UART1,"\r\n\r\n",4);
+            free(isFixedStr);
+        }
+
+}
+
+void init_MainTask(void* param)
+{    
+    // variables para el calculo de bateria   
+    uint8_t percent;
+    uint16_t v;
+    // vartiables para el gps
+    GPS_Info_t* gpsInfo = Gps_GetInfo();
+    uint8_t buffer[300];
+    double* latitude = malloc(sizeof(latitude));
+    double* longitude = malloc(sizeof(longitude));
+    //IMEI
+    uint8_t imei[16];
+    memset(imei,0,sizeof(imei));
+    INFO_GetIMEI(imei);
+    init_GPIO(); //interrupciones y leds de alerta
+    //path
+    char* path=malloc(sizeof(path));
+    //wait for gprs network connection ok
+    semStart = OS_CreateSemaphore(0);
+    if(OS_WaitForSemaphore(semStart,3000000) == false){ // espera por 5 min para poder conectarse a la red
+        Trace(1, "No se pudo conectar a la red en 5min");
+    }
+    OS_DeleteSemaphore(semStart);
+
+    init_UART();
+    init_GPS(gpsInfo, buffer);
+
+    sprintf(path,"/module/save/%s",imei);
+    send_Data2Server(path);
+    OS_Sleep(3000);
+    //iteracion para enviarle infor al server
+    while(1)
+    {   
+        v = PM_Voltage(&percent);
+        if(v <= 15){
+            sprintf(path,"/module/action/%s/low-battery",imei);
+            send_Data2Server(path);
+            OS_Sleep(3000);
+        }
+        if(makeCall){
+            sprintf(path,"/module/action/%s/call",imei);
+            Trace(1,"http %s",path);
+            send_Data2Server(path);
+            makeCall = false;
+            OS_Sleep(3000);
+        }
+        if(setAlarm2){
+            sprintf(path,"/module/action/%s/alarm",imei);
+            Trace(1,"http %s",path);
+            send_Data2Server(path);
+            setAlarm1 =false;
+            setAlarm2 = false;
+            OS_Sleep(3000);
+
+        }    
+        
+        get_Coordinates(gpsInfo, buffer,latitude,longitude);       
+        sprintf(path,"/module/save-location/%s/%f/%f/%d",imei,*latitude,*longitude, percent);
+        send_Data2Server(path);
+        OS_Sleep(60000);
+        setAlarm1 = false;
+    }    
+    free(path);
+    free(latitude);
+    free(longitude); 
+}
 
 void socket_MainTask(void *pData)
 {
     API_Event_t* event=NULL;
 
-    testTaskHandle = OS_CreateTask(test_MainTask,
+    testTaskHandle = OS_CreateTask(init_MainTask,
         NULL, NULL, TEST_TASK_STACK_SIZE, TEST_TASK_PRIORITY, 0, 0, TEST_TASK_NAME);
 
     while(1)
