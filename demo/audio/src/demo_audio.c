@@ -27,7 +27,7 @@ static HANDLE secondTaskHandle = NULL;
 static int recordFd = -1;
 static bool playEnd = true;
 
-void RecordTest();
+//void RecordTest();
 
 
 void EventDispatch(API_Event_t* pEvent)
@@ -63,7 +63,7 @@ void PlayCallback(AUDIO_Error_t result)
 
 void Music()
 {
-    const uint8_t* path = "/t/music.mp3";
+    const uint8_t* path = "/t/sound.mp3";
     Trace(1,"play music %s now",path);
 
     AUDIO_Error_t ret = AUDIO_Play(path,AUDIO_TYPE_MP3,PlayCallback);
@@ -171,11 +171,12 @@ void SecondTask(void *pData)
     
     OS_Sleep(5000);
 
-    RecordTest();
-    LoopTest();
+    //RecordTest();
+    //LoopTest();
     Music();
 
     while(1)
+        Music();
         OS_Sleep(1000);
 }
 

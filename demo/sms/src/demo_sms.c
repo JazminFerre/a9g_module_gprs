@@ -14,10 +14,10 @@
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////configuration//////////////////////////////////////////////////
-#define TEST_PHONE_NUMBER "13415840120"
+#define TEST_PHONE_NUMBER "0234515533198"
 const uint8_t unicodeMsg[] = {0x00, 0x61, 0x00, 0x61, 0x00, 0x61, 0x6d, 0x4b, 0x8b, 0xd5, 0x77, 0xed, 0x4f, 0xe1}; //unicode:aaa测试短信
 const uint8_t gbkMsg[]     = {0x62, 0x62, 0x62, 0xB0, 0xA1, 0xB0, 0xA1, 0xB0, 0xA1, 0xB0, 0xA1, 0x63, 0x63, 0x63 };//GBK    :bbb啊啊啊啊ccc
-const uint8_t utf8Msg[]    = "utf-8测试短信";//Cause the encoding format of this file(sms.c) is UTF-8
+uint8_t utf8Msg[]    = "utf-8";//Cause the encoding format of this file(sms.c) is UTF-8
                             // UTF-8 Bytes:75 74 66 2D 38 E6 B5 8B E8 AF 95 E7 9F AD E4 BF A1 
                             //(unicode:\u0075\u0074\u0066\u002d\u0038\u6d4b\u8bd5\u77ed\u4fe1) //you can convert here:https://r12a.github.io/apps/conversion/
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -73,7 +73,7 @@ void Init()
 }
 
 
-
+/*
 void SendSmsUnicode()
 {
     Trace(1,"sms start send unicode message");
@@ -101,22 +101,25 @@ void SendSmsGbk()
     }
     OS_Free(unicode);
 }
-
+*/
 void SendUtf8()
 {
     uint8_t* unicode = NULL;
     uint32_t unicodeLen;
 
     Trace(1,"sms start send UTF-8 message");
-
+    Trace(1,"hola jaz 3  %s", TEST_PHONE_NUMBER);
     if(!SMS_LocalLanguage2Unicode(utf8Msg,strlen(utf8Msg),CHARSET_UTF_8,&unicode,&unicodeLen))
     {
         Trace(1,"local to unicode fail!");
+        Trace(1,"hola jaz4");
         return;
     }
+    Trace(1,"hola jaz z %s", unicode);
     if(!SMS_SendMessage(TEST_PHONE_NUMBER,unicode,unicodeLen,SIM0))
     {
         Trace(1,"sms send message fail");
+        Trace(1,"hola jaz 5");
     }
     OS_Free(unicode);
 }
@@ -126,6 +129,7 @@ void SendSMS()
 {
     // SendSmsUnicode();
     // SendSmsGbk();
+    Trace(1,"hola jaz 2");
     SendUtf8();
 }
 
@@ -160,16 +164,20 @@ void EventDispatch(API_Event_t* pEvent)
             Trace(10,"!!NO SIM CARD%d!!!!",pEvent->param1);
             break;
         case API_EVENT_ID_SYSTEM_READY:
-            Trace(1,"system initialize complete");
+        {
             flag |= 1;
+            Trace(1,"system initialize complete flag: %d", flag);
             break;
+        }
         case API_EVENT_ID_NETWORK_REGISTERED_HOME:
         case API_EVENT_ID_NETWORK_REGISTERED_ROAMING:
-            Trace(2,"network register success");
+        {
             flag |= 2;
+            Trace(2,"network register success, flag : %d", flag);
             break;
+        }
         case API_EVENT_ID_SMS_SENT:
-            Trace(2,"Send Message Success");
+            Trace(2,"hola jaz 6 Send Message Success");
             break;
         case API_EVENT_ID_SMS_RECEIVED:
             Trace(2,"received message");
@@ -232,7 +240,8 @@ void EventDispatch(API_Event_t* pEvent)
     if(flag == 3)
     {
         SMS_Storage_Info_t storageInfo;
-        // SendSMS();
+        SendSMS();
+        Trace(1,"hola jaz");
         ServerCenterTest();
         SMS_GetStorageInfo(&storageInfo,SMS_STORAGE_SIM_CARD);
         Trace(1,"sms storage sim card info, used:%d,total:%d",storageInfo.used,storageInfo.total);
@@ -254,7 +263,6 @@ void SMSTest(void* pData)
     API_Event_t* event=NULL;
 
     Init();
-
     while(1)
     {
         if(OS_WaitEvent(mainTaskHandle, (void**)&event, OS_TIME_OUT_WAIT_FOREVER))

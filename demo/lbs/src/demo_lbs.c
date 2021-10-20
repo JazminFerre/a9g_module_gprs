@@ -48,9 +48,9 @@ void EventDispatch(API_Event_t* pEvent)
         case API_EVENT_ID_NETWORK_ATTACHED:
             Trace(2,"network attach success");
             Network_PDP_Context_t context = {
-                .apn        ="cmnet",
-                .userName   = ""    ,
-                .userPasswd = ""
+                    .apn        ="datos.personal.com",
+                    .userName   = "datos",
+                    .userPasswd = "datos"
             };
             Network_StartActive(context);
             break;
@@ -64,15 +64,16 @@ void EventDispatch(API_Event_t* pEvent)
         {
             uint8_t number = pEvent->param1;
             Network_Location_t* location = pEvent->pParam1;
-            Trace(2,"network cell infomation,serving cell number:1, neighbor cell number:%d",number-1);
+            Trace(2,"http network cell infomation,serving cell number:1, neighbor cell number:%d",number-1);
             
             for(int i=0;i<number;++i)
             {
-                Trace(2,"cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
+                Trace(2,"http cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
 				location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2], 
 				location[i].sMnc[0], location[i].sMnc[1], location[i].sMnc[2],
 				location[i].sLac, location[i].sCellID, location[i].iBsic,
                 location[i].iRxLev, location[i].iRxLevSub, location[i].nArfcn);
+                Trace(2,"http %d",location[i].sCellID);
             }
 
             float longitude,latitude;

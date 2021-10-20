@@ -1,4 +1,4 @@
-/*
+ /*
  * @File  app_main.c
  * @Brief An example of SDK's mini system
  * 
@@ -17,16 +17,21 @@
 #include "string.h"
 #include "stdlib.h"
 #include "stdio.h"
-
+#include <api_socket.h>
+#include <api_network.h>
 #include "api_sms.h"
 #include "api_hal_uart.h"
-#include "include/app_main_example.h"
+#include "include/app_main.h"
 
 #define AppMain_TASK_STACK_SIZE    (1024 * 2)
 #define AppMain_TASK_PRIORITY      1 
 HANDLE mainTaskHandle  = NULL;
 HANDLE otherTaskHandle = NULL;
-
+Network_PDP_Context_t context = {
+                    .apn        ="datos.personal.com",
+                    .userName   = "datos",
+                    .userPasswd = "datos"
+                };
 static uint8_t flag = 0;
 
 void SMSInit()
@@ -131,13 +136,38 @@ void EventDispatch(API_Event_t* pEvent)
             Trace(10,"!!NO SIM CARD%d!!!!",pEvent->param1);
             break;
         case API_EVENT_ID_SYSTEM_READY:
-            Trace(1,"system initialize complete");
             flag |= 1;
+            Trace(1, "message flag = %d",flag);
+            Trace(1,"system initialize complete");
             break;
         case API_EVENT_ID_NETWORK_REGISTERED_HOME:
         case API_EVENT_ID_NETWORK_REGISTERED_ROAMING:
-            Trace(2,"network register success");
+        {
+            uint8_t status;
             flag |= 2;
+            Trace(1, " message flag = %d",flag);
+            Trace(2,"network register success");
+            bool ret = Network_GetAttachStatus(&status);
+            if(!ret)
+                Trace(1,"get attach staus fail");
+            Trace(1,"attach status:%d",status);
+            if(status == 0)
+            {
+                ret = Network_StartAttach();
+                if(!ret)
+                {
+                    Trace(1,"network attach fail");
+                }
+            }
+            else
+            {
+                Network_StartActive(context);
+            }
+            break;
+        }
+        case API_EVENT_ID_NETWORK_ATTACHED:
+            Trace(2,"network attach success");
+            Network_StartActive(context);
             break;
         case API_EVENT_ID_SMS_SENT:
             Trace(2,"Send Message Success");
@@ -179,7 +209,9 @@ void EventDispatch(API_Event_t* pEvent)
     if(flag == 3)
     {
         SMS_Storage_Info_t storageInfo;
+        Trace(1,"hola pase por aca message");
         SendSMS("Ready and able!");
+        Trace(1,"message hola pase por aca");
         ServerCenterTest();
         SMS_GetStorageInfo(&storageInfo,SMS_STORAGE_SIM_CARD);
         Trace(1,"sms storage sim card info, used:%d,total:%d",storageInfo.used,storageInfo.total);

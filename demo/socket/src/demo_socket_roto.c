@@ -4,7 +4,7 @@
 #include <api_event.h>
 #include <api_socket.h>
 #include <api_network.h>
-#include <api_debug.h> 
+#include <api_debug.h>
 #include "api_hal_pm.h"
 #include "api_info.h"
 #include "api_hal_gpio.h"
@@ -17,7 +17,6 @@
 #include "gps_parse.h"
 #include "math.h"
 #include "gps.h"
-#include "api_audio.h"
 #include "api_sms.h"
 
 /*******************************************************************/
@@ -44,55 +43,140 @@ bool ackCall = false;
 bool makeCall = false;
 bool setAlarm1 = false;
 bool setAlarm2 = false;
+bool networkID = true;
 bool isGPSFixed = false;
-char* nSerial = "12345";
-char* cellNumber=NULL;
-uint8_t imei[16];                                 //IMEI
-#define GPIO_PIN_LED_GREEN  GPIO_PIN28   
-
-Network_PDP_Context_t context = {
+Network_PDP_Context_t context = { // PERSONAL
                     .apn        ="datos.personal.com",
                     .userName   = "datos",
                     .userPasswd = "datos"
                 };
-Network_PDP_Context_t context1 = {
+Network_PDP_Context_t context1 = { //CLARO
                     .apn        ="claro.pe",
                     .userName   = "claro",
                     .userPasswd = "claro"
                 };
-Network_PDP_Context_t context2 = {
+Network_PDP_Context_t context2 = {  // MOVISTAR 
                     .apn        ="wap.gprs.unifon.com.ar",
                     .userName   = "wap",
                     .userPasswd = "wap"
                 };
-Network_PDP_Context_t context3 = {
+Network_PDP_Context_t context3 = { //TUENTI
                     .apn        ="internet.movil",
                     .userName   = "internet",
                     .userPasswd = "internet"
                 };
-Network_Location_t* locationCellTower;
-uint8_t numberCellTower=0;
-GPIO_config_t gpioLedBlue2 = {
-        .mode         = GPIO_MODE_OUTPUT,
-        .pin          = GPIO_PIN28,
-        .defaultLevel = GPIO_LEVEL_LOW
-};
 
-void RemoveChars(char *s, int c)
-{
-    int writer = 0, reader = 0;
-
-    while (s[reader])
+void EventDispatch(API_Event_t* pEvent)
+{   uint8_t dtmf = '0';
+    switch(pEvent->id)
     {
-        if (s[reader]!=c) 
-        {   
-            s[writer++] = s[reader];
+        case API_EVENT_ID_NO_SIMCARD:
+            Trace(10,"!!NO SIM CARD%d!!!!",pEvent->param1);
+            break;
+        case API_EVENT_ID_SYSTEM_READY:
+            Trace(1,"system initialize complete");
+            break;
+        case API_EVENT_ID_NETWORK_REGISTER_SEARCHING:
+            Trace(2,"network register searching");
+            break;
+        case API_EVENT_ID_NETWORK_REGISTER_DENIED:
+            Trace(2,"network register denied");
+            break;
+        case API_EVENT_ID_NETWORK_REGISTER_NO:
+            Trace(2,"network register no");
+            break;
+        case API_EVENT_ID_NETWORK_REGISTERED_HOME:
+        case API_EVENT_ID_NETWORK_REGISTERED_ROAMING:
+        {
+            uint8_t status;
+            Trace(2,"network register success");
+            bool ret = Network_GetAttachStatus(&status);
+            if(!ret)
+                Trace(1,"get attach staus fail");
+            Trace(1,"attach status:%d",status);
+            if(status == 0)
+            {
+                ret = Network_StartAttach();
+                if(!ret)
+                {
+                    Trace(1,"network attach fail");
+                }
+            }
+            else
+            {
+                Network_StartActive(context);
+            }
+            break;
         }
-
-        reader++;       
+        case API_EVENT_ID_NETWORK_ATTACHED:
+            Trace(2,"network attach success");
+            Network_StartActive(context);
+            break;
+        case API_EVENT_ID_NETWORK_ACTIVATED:
+            Trace(2,"network activate success");
+            OS_ReleaseSemaphore(semStart);
+            break;
+        case API_EVENT_ID_NETWORK_CELL_INFO:
+        {
+            uint8_t number = pEvent->param1;
+            Network_Location_t* location = pEvent->pParam1;
+            Trace(2,"http network cell infomation,serving cell number:1, neighbor cell number:%d",number-1);
+            
+            for(int i=0;i<number;++i)
+            {
+                Trace(2,"http cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
+				location[i].sMcc[0], location[i].sMcc[1], location[i].sMcc[2], 
+				location[i].sMnc[0], location[i].sMnc[1], location[i].sMnc[2],
+				location[i].sLac, location[i].sCellID, location[i].iBsic,
+                location[i].iRxLev, location[i].iRxLevSub, location[i].nArfcn);
+                Trace(2,"http %d",location[i].sCellID);
+            }
+            networkID = true;
+            break;
+        }
+        case API_EVENT_ID_GPS_UART_RECEIVED:
+            GPS_Update(pEvent->pParam1,pEvent->param1);
+            break;
+        case API_EVENT_ID_UART_RECEIVED:
+            if(pEvent->param1 == UART1)
+            {
+                uint8_t data[pEvent->param2+1];
+                data[pEvent->param2] = 0;
+                memcpy(data,pEvent->pParam1,pEvent->param2);
+                Trace(1,"uart received data,length:%d,data:%s",pEvent->param2,data);
+                if(strcmp(data,"close") == 0)
+                {
+                    Trace(1,"close gps");
+                    GPS_Close();
+                    isGpsOn = false;
+                }
+                else if(strcmp(data,"open") == 0)
+                {
+                    Trace(1,"open gps");
+                    GPS_Open(NULL);
+                    isGpsOn = true;
+                }
+            }
+            break;
+        case API_EVENT_ID_CALL_INCOMING:   //param1: number type, pParam1:number
+            isCallComing = true;
+            while(!ackCall && isCallComing)
+            {
+                Trace(1,"make a DTMF:%c",dtmf);
+                CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,false);
+                OS_Sleep(3000);
+                dtmf ++;
+                if(dtmf == '10') dtmf = '0';
+            }
+            ackCall = false;
+            isCallComing = false;
+            break;
+        case API_EVENT_ID_CALL_ANSWER:  
+            Trace(1,"answer success");
+            break;
+        default:
+            break;
     }
-
-    s[writer]=0;
 }
 
 int Http_Post(const char* domain, int port,const char* path, char* retBuffer, int* bufferLen)
@@ -192,13 +276,10 @@ int Http_Post(const char* domain, int port,const char* path, char* retBuffer, in
     return -1;
 }
 
-bool send_Data2Server(char* path)
+void send_Data2Server(char* path)
 {
     char buffer[2048];
     int len = sizeof(buffer);
-    bool serverResponse =false;
-    char* response200 = "200";
-    char* response201 = "201";
     //perform http post
     if(Http_Post(SERVER_IP,SERVER_PORT,path,buffer,&len) < 0)
     {
@@ -214,14 +295,7 @@ bool send_Data2Server(char* path)
         Trace(1,"http response header:%s",buffer);
         index0[4] = temp;
         Trace(1,"http response body:%s",index0+4);
-        if(strstr(buffer,response200)!=NULL){
-            serverResponse =true;
-        }
-        if(strstr(buffer,response201)!=NULL){
-          serverResponse =true;
-        }
     }
-    return serverResponse;
 }
 
 void OnPinFalling(GPIO_INT_callback_param_t* param)
@@ -243,10 +317,14 @@ void OnPinFalling(GPIO_INT_callback_param_t* param)
                 }
                 else{
                     makeCall = true;
-                    CALL_Dial(DIAL_NUMBER);
+                    //GPIO_LEVEL statusNow;
+                    //GPIO_Get(GPIO_PIN2,&statusNow);
+                    //Trace(1,"http gpio2 status now:%d",statusNow);
+                    //CALL_Dial(DIAL_NUMBER);
                     break;
                 }
-            }       
+            }
+            break;       
         case GPIO_PIN3: // El pin03 realiza la llamada al numero por defecto
             ackCall = true;
             setAlarm1 = true;
@@ -257,7 +335,6 @@ void OnPinFalling(GPIO_INT_callback_param_t* param)
         default:
             break;
     }
-
 }
 
 void init_GPIO()
@@ -266,7 +343,7 @@ void init_GPIO()
         .mode               = GPIO_MODE_INPUT_INT,
         .pin                = GPIO_PIN2,
         .defaultLevel       = GPIO_LEVEL_LOW,
-        .intConfig.debounce = 50,
+        .intConfig.debounce = 500,
         .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
         .intConfig.callback = OnPinFalling
     };
@@ -274,12 +351,12 @@ void init_GPIO()
         .mode               = GPIO_MODE_INPUT_INT,
         .pin                = GPIO_PIN3,
         .defaultLevel       = GPIO_LEVEL_LOW,
-        .intConfig.debounce = 50,
+        .intConfig.debounce = 500,
         .intConfig.type     = GPIO_INT_TYPE_FALLING_EDGE,
         .intConfig.callback = OnPinFalling
-    };
+    }; 
     // Inicio las interrupciones
-    GPIO_Init(gpioLedBlue2);
+
     GPIO_Init(gpioINT); 
     GPIO_Init(gpioINT2);
 }
@@ -289,13 +366,11 @@ void init_GPS(GPS_Info_t* gpsInfo, uint8_t * buffer)
     //open GPS hardware(UART2 open either)
     GPS_Init();
     GPS_Open(NULL);
-
     //wait for gps start up, or gps will not response command
-    while(gpsInfo->rmc.latitude.value == 0)
-        OS_Sleep(1000);
-    
+    while(gpsInfo->rmc.latitude.value == 0)OS_Sleep(1000);
+
     // set gps nmea output interval
-    for(uint8_t i = 0;i<5;++i)
+    for(uint8_t i = 0;i<5;++i) 
     {
         bool ret = GPS_SetOutputInterval(10000);
         Trace(1,"set gps ret:%d",ret);
@@ -303,16 +378,10 @@ void init_GPS(GPS_Info_t* gpsInfo, uint8_t * buffer)
             break;
         OS_Sleep(1000);
     }
-    
-    if(!GPS_GetVersion(buffer,150))
-        Trace(1,"get gps firmware version fail");
-    else
-        Trace(1,"gps firmware version:%s",buffer);
 
-    if(!GPS_SetOutputInterval(1000))
-        Trace(1,"set nmea output interval fail");
-    
-    Trace(1,"init ok");
+    if(!GPS_GetVersion(buffer,150))Trace(1,"get gps firmware version fail");
+    else Trace(1,"gps firmware version:%s",buffer);
+    if(!GPS_SetOutputInterval(1000)) Trace(1,"set nmea output interval fail");
 }
 
 void init_UART(){
@@ -328,49 +397,27 @@ void init_UART(){
     UART_Init(UART1,config);
 }
 
-void SMSInit()
-{
-    if(!SMS_SetFormat(SMS_FORMAT_TEXT,SIM0))
-    {
-        Trace(1,"sms set format error");
-        return;
-    }
-    SMS_Parameter_t smsParam = {
-        .fo = 17 ,
-        .vp = 167,
-        .pid= 0  ,
-        .dcs= 8  ,//0:English 7bit, 4:English 8 bit, 8:Unicode 2 Bytes
-    };
-    if(!SMS_SetParameter(&smsParam,SIM0))
-    {
-        Trace(1,"sms set parameter error");
-        return;
-    }
-    if(!SMS_SetNewMessageStorage(SMS_STORAGE_SIM_CARD))
-    {
-        Trace(1,"sms set message storage fail");
-        return;
-    }
-}
-
 void get_Coordinates(GPS_Info_t* gpsInfo, uint8_t * buffer, double* latitude, double* longitude){
  if(isGpsOn)
         {
-            //show fix info
             uint8_t isFixed = gpsInfo->gsa[0].fix_type > gpsInfo->gsa[1].fix_type ?gpsInfo->gsa[0].fix_type:gpsInfo->gsa[1].fix_type;
             char* isFixedStr= malloc(sizeof(isFixedStr));            
-            if(isFixed == 2)
+            if(isFixed == 2){
+                isGPSFixed = true;
                 isFixedStr = "2D fix";
+            }
             else if(isFixed == 3)
-            {
+            {   
+                isGPSFixed = true;
                 if(gpsInfo->gga.fix_quality == 1)
                     isFixedStr = "3D fix";
                 else if(gpsInfo->gga.fix_quality == 2)
                     isFixedStr = "3D/DGPS fix";
             }
-            else
+            else{
                 isFixedStr = "no fix";
-
+                isGPSFixed = false;
+            }
             //convert unit ddmm.mmmm to degree(°) 
             int temp = (int)(gpsInfo->rmc.latitude.value/gpsInfo->rmc.latitude.scale/100);
             *latitude = temp+(double)(gpsInfo->rmc.latitude.value - temp*gpsInfo->rmc.latitude.scale*100)/gpsInfo->rmc.latitude.scale/60.0;
@@ -379,231 +426,107 @@ void get_Coordinates(GPS_Info_t* gpsInfo, uint8_t * buffer, double* latitude, do
             snprintf(buffer,sizeof(buffer),"http GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s, coordinate:WGS84, Latitude:%f, Longitude:%f, unit:degree,altitude:%f",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type,
                                                                 gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr, latitude,longitude,gpsInfo->gga.altitude);
             //show in tracer
-            Trace(2,buffer);
+            Trace(1,"http GPS fix mode:%d, BDS fix mode:%d, fix quality:%d, satellites tracked:%d, gps sates total:%d, is fixed:%s",gpsInfo->gsa[0].fix_type, gpsInfo->gsa[1].fix_type, gpsInfo->gga.fix_quality,gpsInfo->gga.satellites_tracked, gpsInfo->gsv[0].total_sats, isFixedStr);
             //send to UART1
             UART_Write(UART1,buffer,strlen(buffer));
             UART_Write(UART1,"\r\n\r\n",4);
             free(isFixedStr);
         }
-
 }
 
-void loop_function(GPS_Info_t* gpsInfo, uint8_t * buffer){
-    uint8_t percent;     // variables para el calculo de bateria   
-    uint16_t v;          // variables para el calculo de bateria 
+void loop_function(uint8_t *imei,GPS_Info_t* gpsInfo, uint8_t * buffer){
+
+    uint8_t percent;                                // variables para el calculo de bateria   
+    uint16_t v;                                     // variables para el calculo de bateria 
     double* latitude = malloc(sizeof(latitude));    // vartiables para el gps
-    double* longitude = malloc(sizeof(longitude));  // vartiables para el gps  
-    char* path=malloc(sizeof(path));  //path
+    double* longitude = malloc(sizeof(longitude));  // vartiables para el gps 
+    char* path=malloc(sizeof(path));
 
-
-    while(1){
-        v = PM_Voltage(&percent);  
+    while(1)
+    {
+        v = PM_Voltage(&percent);
+        if(v <= 15){
+            sprintf(path,"/module/action/%s/low-battery",imei);
+            //send_Data2Server(path);
+            OS_Sleep(3000);
+        }
+        if(makeCall){
+            sprintf(path,"/module/action/%s/call",imei);
+            Trace(1,"http %s",path);
+            //send_Data2Server(path);
+            makeCall = false;
+            OS_Sleep(3000);
+        }
+        if(setAlarm2){
+            sprintf(path,"/module/action/%s/alarm",imei);
+            Trace(1,"http %s",path);
+            //send_Data2Server(path);
+            setAlarm1 =false;
+            setAlarm2 = false;
+            OS_Sleep(3000);
+        }    
         if(isGPSFixed){
             get_Coordinates(gpsInfo, buffer,latitude,longitude);       
-            sprintf(path,"/module/save-location/%s/gps/%f/%f/%d/%d/%d",imei,*latitude,*longitude, percent,makeCall,setAlarm2);
-            Trace(1,"http %s",path); 
-            send_Data2Server(path);
-            makeCall = false;
-            setAlarm2 = false;
+            sprintf(path,"/module/save-location/%s/%f/%f/%d",imei,*latitude,*longitude, percent);
+            //send_Data2Server(path);
+            free(latitude);
+            free(longitude); 
         }
         else{
             if(!Network_GetCellInfoRequst()){
-                Trace(1,"http network get cell info fail");
+            sprintf(path,"/module/noGPS/noCELL/%s",imei);
+            Trace(1,"http %s",path);
+            //send_Data2Server(path);
             }
-                        
-            for(int i=0;i<numberCellTower;++i)
-            {
-                Trace(2,"http cell %d info:%d%d%d,%d%d%d,%d,%d,%d,%d,%d,%d",i,
-				locationCellTower[i].sMcc[0], locationCellTower[i].sMcc[1], locationCellTower[i].sMcc[2], 
-				locationCellTower[i].sMnc[0], locationCellTower[i].sMnc[1], locationCellTower[i].sMnc[2],
-				locationCellTower[i].sLac, locationCellTower[i].sCellID, locationCellTower[i].iBsic,
-                locationCellTower[i].iRxLev, locationCellTower[i].iRxLevSub, locationCellTower[i].nArfcn);
-                Trace(2,"http %d",locationCellTower[i].sCellID);
-            }
-            makeCall = false;
-            setAlarm2 = false;
         }
-
+        free(path);
         OS_Sleep(60000);
         setAlarm1 = false;
         ackCall = false;
     }
 }
 
-void EventDispatch(API_Event_t* pEvent) 
-{ 
-    switch(pEvent->id)
-    {
-        case API_EVENT_ID_NO_SIMCARD:
-            Trace(10,"!!NO SIM CARD%d!!!!",pEvent->param1);
-            break;
-        case API_EVENT_ID_SYSTEM_READY:
-            Trace(1,"system initialize complete");
-            break;
-        case API_EVENT_ID_NETWORK_REGISTER_SEARCHING:
-            Trace(2,"network register searching");
-            break;
-        
-        case API_EVENT_ID_NETWORK_REGISTER_DENIED:
-            Trace(2,"network register denied");
-            break;
-        
-        case API_EVENT_ID_NETWORK_REGISTER_NO:
-            Trace(2,"network register no");
-            break;
-        
-        case API_EVENT_ID_NETWORK_REGISTERED_HOME:
-        case API_EVENT_ID_NETWORK_REGISTERED_ROAMING:
-        {
-            uint8_t status;
-            Trace(2,"network register success");
-            bool ret = Network_GetAttachStatus(&status);
-            if(!ret)
-                Trace(1,"get attach staus fail");
-            Trace(1,"attach status:%d",status);
-            if(status == 0)
-            {
-                ret = Network_StartAttach();
-                if(!ret)
-                {
-                    Trace(1,"network attach fail");
-                }
-            }
-            else
-            {
-                Network_StartActive(context);
-            }
-            break;
-        }
-        case API_EVENT_ID_NETWORK_ATTACHED:
-            Trace(2,"network attach success");
-            Network_StartActive(context);
-            break;
-
-        case API_EVENT_ID_NETWORK_ACTIVATED:
-            Trace(2,"network activate success");
-            OS_ReleaseSemaphore(semStart);
-            break;
-        case API_EVENT_ID_NETWORK_CELL_INFO:
-        {
-            locationCellTower = pEvent->pParam1;
-            numberCellTower =pEvent->param1;
-            break;
-        }
-        case API_EVENT_ID_GPS_UART_RECEIVED:
-            GPS_Update(pEvent->pParam1,pEvent->param1);
-            break;
-        case API_EVENT_ID_UART_RECEIVED:
-            if(pEvent->param1 == UART1)
-            {
-                uint8_t data[pEvent->param2+1];
-                data[pEvent->param2] = 0;
-                memcpy(data,pEvent->pParam1,pEvent->param2);
-                Trace(1,"uart received data,length:%d,data:%s",pEvent->param2,data);
-                if(strcmp(data,"close") == 0)
-                {
-                    Trace(1,"close gps");
-                    GPS_Close();
-                    isGpsOn = false;
-                }
-                else if(strcmp(data,"open") == 0)
-                {
-                    Trace(1,"open gps");
-                    GPS_Open(NULL);
-                    isGpsOn = true;
-                }
-            }
-            break;
-        case API_EVENT_ID_CALL_INCOMING:   //param1: number type, pParam1:number
-            isCallComing = true;
-            AUDIO_SetMode(AUDIO_MODE_LOUDSPEAKER);
-            AUDIO_SpeakerOpen();
-            AUDIO_SpeakerSetVolume(4);
-            char dtmf = '0';
-            while(!ackCall && isCallComing){
-                Trace(1,"make a DTMF:%c",dtmf);
-                CALL_DTMF(dtmf,CALL_DTMF_GAIN_m3dB,5,15,false);
-                OS_Sleep(3000);
-                if(dtmf == '10') dtmf = '0';
-                dtmf ++;
-            }
-            ackCall = false;
-            isCallComing = false;
-            break;
-        case API_EVENT_ID_CALL_ANSWER  :  
-            Trace(1,"answer success");
-            break;
-        case API_EVENT_ID_SMS_LIST_MESSAGE:
-        {
-            SMS_Message_Info_t* messageInfo = (SMS_Message_Info_t*)pEvent->pParam1;
-            char * authSMS=messageInfo->data;
-            char* auth=malloc(sizeof(auth));
-            int c = 45; // - en ASCII
-            sprintf(auth,"A9Gmodule%s-",nSerial);
-            if(strstr(authSMS,auth)!=NULL){
-                cellNumber = strchr(authSMS,c);
-                RemoveChars(cellNumber,c);
-                cellNumber[strlen(cellNumber)-1] = '\0';
-            }
-            else{
-                Trace(1,"http message content len:%d,data:%s",messageInfo->dataLen,messageInfo->data);
-                SMS_DeleteMessage(messageInfo->index,SMS_STATUS_ALL,SMS_STORAGE_SIM_CARD);
-            }
-            break;
-        }
-        default:
-            break;
-    }
-}
-
 void init_MainTask(void* param)
 {    
-    //**************************VARIABLES
+
+    // ***********************************DECLARACION DE VARIABLES
     GPS_Info_t* gpsInfo = Gps_GetInfo();            // vartiables para el gps
     uint8_t buffer[300];                            // vartiables para el gps
-    char* path=malloc(sizeof(path));  //path
-    static GPIO_LEVEL ledBlueLevel = GPIO_LEVEL_LOW;
-    //************************** CONEXION A LA RED
+    uint8_t imei[16];                               // variables para el IMEI
+   
+    // ************************************************** ESPERAR A LA CONEXION 2G
     semStart = OS_CreateSemaphore(0);
     if(OS_WaitForSemaphore(semStart,3000000) == false){ // espera por 5 min para poder conectarse a la red
         Trace(1, "No se pudo conectar a la red en 5min");
     }
     OS_DeleteSemaphore(semStart);
-    //IMEI
-    memset(imei,0,sizeof(imei));  
-    INFO_GetIMEI(imei);
-    // DECLARACION DE MODULO EN EL SERVER
-    sprintf(path,"/module/save/%s/%s",imei,nSerial);
-    send_Data2Server(path);
-    OS_Sleep(8000);
-    SMSInit();
-    init_UART();
-    //********************** API REST APP Y MODULO *********
-    //
-    while(cellNumber == NULL){
-        SMS_ListMessageRequst(SMS_STATUS_ALL,SMS_STORAGE_SIM_CARD);
-        OS_Sleep(6000);
-    }
-    OS_Sleep(8000);
-    sprintf(path,"/module/config/%s/%s/%s",imei,nSerial,cellNumber);
-    if(send_Data2Server(path)==true){
-        ledBlueLevel = (ledBlueLevel==GPIO_LEVEL_HIGH)?GPIO_LEVEL_LOW:GPIO_LEVEL_HIGH;
-        GPIO_SetLevel(gpioLedBlue2,ledBlueLevel);        //Set level
-    }
 
-    //********************** INICIALIZACIONES******/
-    init_GPIO(); //interrupciones y leds de alerta **********
-    init_GPS(gpsInfo, buffer);
+    // *******************************************************INICIALIZACIONES
     isDialSuccess = false;
     isCallComing = false;
     ackCall = false;
     makeCall = false;
     setAlarm1 = false;
     setAlarm2 = false;
-  
-    //iteracion para enviarle infor al server
-    loop_function(gpsInfo, buffer);
-    //free(path);
+    init_GPIO();
+    init_UART();
+    init_GPS(gpsInfo, buffer);
+
+    //¨************************************************IMEI
+    memset(imei,0,sizeof(imei));
+    INFO_GetIMEI(imei);
+
+    //************************************************PRIMERA CONEXION
+    char* path=malloc(sizeof(path));                // path
+    sprintf(path,"/module/save/%s",imei);
+    //send_Data2Server(path);
+    free(path);
+    OS_Sleep(3000);
+
+    //**************************************************ITERACIÓN de funcionamiento
+    loop_function(imei,gpsInfo,buffer);
+
+
 }
 
 void socket_MainTask(void *pData)
@@ -631,3 +554,4 @@ void socket_Main()
         NULL, NULL, MAIN_TASK_STACK_SIZE, MAIN_TASK_PRIORITY, 0, 0, MAIN_TASK_NAME);
     OS_SetUserMainHandle(&socketTaskHandle);
 }
+
