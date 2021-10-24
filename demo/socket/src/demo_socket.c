@@ -48,7 +48,8 @@ bool isGPSFixed = false;
 char* nSerial = "12345";
 char* cellNumber=NULL;
 uint8_t imei[16];                                 //IMEI
-#define GPIO_PIN_LED_GREEN  GPIO_PIN28   
+#define GPIO_PIN_LED_BLUE   GPIO_PIN27
+#define GPIO_PIN_LED_GREEN  GPIO_PIN28  
 
 Network_PDP_Context_t context = {
                     .apn        ="datos.personal.com",
@@ -72,11 +73,7 @@ Network_PDP_Context_t context3 = {
                 };
 Network_Location_t* locationCellTower;
 uint8_t numberCellTower=0;
-GPIO_config_t gpioLedBlue2 = {
-        .mode         = GPIO_MODE_OUTPUT,
-        .pin          = GPIO_PIN28,
-        .defaultLevel = GPIO_LEVEL_LOW
-};
+
 
 void RemoveChars(char *s, int c)
 {
@@ -279,9 +276,44 @@ void init_GPIO()
         .intConfig.callback = OnPinFalling
     };
     // Inicio las interrupciones
-    GPIO_Init(gpioLedBlue2);
     GPIO_Init(gpioINT); 
     GPIO_Init(gpioINT2);
+
+}
+
+void blinkLED(int estado){
+    GPIO_config_t gpioLedBlue;
+    gpioLedBlue.mode         = GPIO_MODE_OUTPUT;
+    gpioLedBlue.pin          = GPIO_PIN27;
+    gpioLedBlue.defaultLevel = GPIO_LEVEL_LOW;
+
+    GPIO_config_t gpioLedBlue2 = {
+        .mode         = GPIO_MODE_OUTPUT,
+        .pin          = GPIO_PIN28,
+        .defaultLevel = GPIO_LEVEL_LOW
+    };
+    GPIO_Init(gpioLedBlue2);
+    GPIO_Init(gpioLedBlue);
+    if(estado == 1){ //prender led
+        GPIO_SetLevel(gpioLedBlue,GPIO_LEVEL_HIGH);        //Set level
+        GPIO_SetLevel(gpioLedBlue2,GPIO_LEVEL_HIGH);        //Set level
+    }
+    else if (estado == 2) // apagar led
+    { 
+        GPIO_SetLevel(gpioLedBlue,GPIO_LEVEL_LOW);        //Set level
+        GPIO_SetLevel(gpioLedBlue2,GPIO_LEVEL_LOW);
+    }
+    else if (estado == 3) // blink led
+    {
+        GPIO_SetLevel(gpioLedBlue,GPIO_LEVEL_HIGH);        //Set level
+        GPIO_SetLevel(gpioLedBlue2,GPIO_LEVEL_HIGH);        //Set level
+        OS_Sleep(8000);
+        GPIO_SetLevel(gpioLedBlue,GPIO_LEVEL_LOW);        //Set level
+        GPIO_SetLevel(gpioLedBlue2,GPIO_LEVEL_LOW);
+    }
+    
+    
+
 }
 
 void init_GPS(GPS_Info_t* gpsInfo, uint8_t * buffer)
@@ -397,7 +429,13 @@ void loop_function(GPS_Info_t* gpsInfo, uint8_t * buffer){
 
 
     while(1){
-        v = PM_Voltage(&percent);  
+        v = PM_Voltage(&percent); 
+        if(v<15){
+            blinkLED(1);
+        }
+        else{
+            blinkLED(2);
+        } 
         if(isGPSFixed){
             get_Coordinates(gpsInfo, buffer,latitude,longitude);       
             sprintf(path,"/module/save-location/%s/gps/%f/%f/%d/%d/%d",imei,*latitude,*longitude, percent,makeCall,setAlarm2);
@@ -562,33 +600,35 @@ void init_MainTask(void* param)
     GPS_Info_t* gpsInfo = Gps_GetInfo();            // vartiables para el gps
     uint8_t buffer[300];                            // vartiables para el gps
     char* path=malloc(sizeof(path));  //path
-    static GPIO_LEVEL ledBlueLevel = GPIO_LEVEL_LOW;
+
+
     //************************** CONEXION A LA RED
     semStart = OS_CreateSemaphore(0);
     if(OS_WaitForSemaphore(semStart,3000000) == false){ // espera por 5 min para poder conectarse a la red
         Trace(1, "No se pudo conectar a la red en 5min");
     }
     OS_DeleteSemaphore(semStart);
+
     //IMEI
     memset(imei,0,sizeof(imei));  
     INFO_GetIMEI(imei);
+
     // DECLARACION DE MODULO EN EL SERVER
     sprintf(path,"/module/save/%s/%s",imei,nSerial);
     send_Data2Server(path);
-    OS_Sleep(8000);
+    OS_Sleep(3000);
     SMSInit();
     init_UART();
+
     //********************** API REST APP Y MODULO *********
-    //
     while(cellNumber == NULL){
         SMS_ListMessageRequst(SMS_STATUS_ALL,SMS_STORAGE_SIM_CARD);
-        OS_Sleep(6000);
+        OS_Sleep(3
+        000);
     }
-    OS_Sleep(8000);
     sprintf(path,"/module/config/%s/%s/%s",imei,nSerial,cellNumber);
     if(send_Data2Server(path)==true){
-        ledBlueLevel = (ledBlueLevel==GPIO_LEVEL_HIGH)?GPIO_LEVEL_LOW:GPIO_LEVEL_HIGH;
-        GPIO_SetLevel(gpioLedBlue2,ledBlueLevel);        //Set level
+        blinkLED(3);
     }
 
     //********************** INICIALIZACIONES******/
